@@ -1,5 +1,8 @@
 # Tinode Instant Messaging Server
 
+> This is a modified copy of [tinode/chat](https://github.com/tinode/chat).
+> See [MODIFICATIONS.md](MODIFICATIONS.md) for what was changed and when.
+
 <img src="docs/logo.svg" align="left" width=128 height=128> Instant messaging full stack. Backend in pure [Go](http://golang.org) (license [GPL 3.0](http://www.gnu.org/licenses/gpl-3.0.en.html)), clients for Android (Java), iOS (Swift), and web (ReactJS), as well as [gRPC](https://grpc.io/) client support for C++, C#, Go, Java, Node, PHP, Python, Ruby, Objective-C, etc (all clients licensed under [Apache 2.0](http://www.apache.org/licenses/LICENSE-2.0)). Wire transport is JSON over websocket (long polling is also available) or [protobuf](https://developers.google.com/protocol-buffers/) with gRPC.
 
 This is beta-quality software: feature-complete and stable but probably with a few bugs or missing features. Follow [instructions](INSTALL.md) to install and run or use one of the cloud services below. Read [API documentation](docs/API.md).

@@ -1,0 +1,15 @@
+# Modifications
+
+This is a modified copy of [tinode/chat](https://github.com/tinode/chat), distributed
+under the same GPL-3.0 license as the original. This file records the modifications, as
+required by section 5(a) of the license. The full history of every change, with dates and
+diffs, is in the git log of this repository.
+
+All modifications are general-purpose: they add configuration options, and every value they
+act on comes from the runtime configuration. None of them is specific to any particular
+deployment.
+
+| Date | Change |
+| --- | --- |
+| 2026-08-05 | `auth/rest`: optional `service_jwt` config section. When present, the REST authenticator signs each outgoing request with a short-lived ES256 JWT bound to the request's method, path and body hash. Absent by default; without it the authenticator behaves exactly as upstream. |
+| 2026-08-05 | Server: optional `grpc_tls` config section, letting the gRPC listener use a TLS configuration separate from the HTTP one. Both sections accept `client_ca_file` and `require_client_cert` for client certificate authentication. Absent by default; without it the gRPC listener shares the HTTP TLS configuration as upstream. |
