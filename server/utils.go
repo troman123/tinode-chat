@@ -4,10 +4,12 @@ package main
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -734,36 +736,101 @@ func platformFromUA(ua string) string {
 	return ""
 }
 
-func parseTLSConfig(tlsEnabled bool, jsconfig json.RawMessage) (*tls.Config, error) {
-	type tlsAutocertConfig struct {
-		// Domains to support by autocert
-		Domains []string `json:"domains"`
-		// Name of directory where auto-certificates are cached, e.g. /etc/letsencrypt/live/your-domain-here
-		CertCache string `json:"cache"`
-		// Contact email for letsencrypt
-		Email string `json:"email"`
-	}
+type tlsAutocertConfig struct {
+	// Domains to support by autocert
+	Domains []string `json:"domains"`
+	// Name of directory where auto-certificates are cached, e.g. /etc/letsencrypt/live/your-domain-here
+	CertCache string `json:"cache"`
+	// Contact email for letsencrypt
+	Email string `json:"email"`
+}
 
-	type tlsConfig struct {
-		// Flag enabling TLS
-		Enabled bool `json:"enabled"`
-		// Listen for connections on this address:port and redirect them to HTTPS port.
-		RedirectHTTP string `json:"http_redirect"`
-		// Enable Strict-Transport-Security by setting max_age > 0
-		StrictMaxAge int `json:"strict_max_age"`
-		// ACME autocert config, e.g. letsencrypt.org
-		Autocert *tlsAutocertConfig `json:"autocert"`
-		// If Autocert is not defined, provide file names of static certificate and key
-		CertFile string `json:"cert_file"`
-		KeyFile  string `json:"key_file"`
-	}
+type tlsConfig struct {
+	// Flag enabling TLS
+	Enabled bool `json:"enabled"`
+	// Listen for connections on this address:port and redirect them to HTTPS port.
+	RedirectHTTP string `json:"http_redirect"`
+	// Enable Strict-Transport-Security by setting max_age > 0
+	StrictMaxAge int `json:"strict_max_age"`
+	// ACME autocert config, e.g. letsencrypt.org
+	Autocert *tlsAutocertConfig `json:"autocert"`
+	// If Autocert is not defined, provide file names of static certificate and key
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
+	// PEM file with the certificate(s) of the CA(s) which sign client certificates. If set,
+	// a client certificate presented by the peer is verified against these CAs.
+	ClientCAFile string `json:"client_ca_file"`
+	// Reject connections which do not present a client certificate signed by one of the
+	// client_ca_file CAs. Requires client_ca_file to be set. If false, a client certificate
+	// is optional but still verified when presented.
+	RequireClientCert bool `json:"require_client_cert"`
+}
 
+func parseTLSConfigJSON(jsconfig json.RawMessage, what string) (*tlsConfig, error) {
 	var config tlsConfig
-
 	if jsconfig != nil {
 		if err := json.Unmarshal(jsconfig, &config); err != nil {
-			return nil, errors.New("http: failed to parse tls_config: " + err.Error() + "(" + string(jsconfig) + ")")
+			return nil, errors.New("http: failed to parse " + what + ": " + err.Error() + "(" + string(jsconfig) + ")")
 		}
+	}
+	return &config, nil
+}
+
+// Turn a parsed TLS config section into a *tls.Config. Carries no listener-wide side
+// effects, so it is safe to call once per listener.
+func makeTLSConfig(config *tlsConfig) (*tls.Config, error) {
+	var conf *tls.Config
+
+	if config.Autocert != nil {
+		// If autocert is provided, use it.
+		certManager := autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(config.Autocert.Domains...),
+			Cache:      autocert.DirCache(config.Autocert.CertCache),
+			Email:      config.Autocert.Email,
+		}
+		conf = certManager.TLSConfig()
+	} else {
+		// Otherwise try to use static keys.
+		cert, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
+		if err != nil {
+			return nil, err
+		}
+		conf = &tls.Config{Certificates: []tls.Certificate{cert}}
+	}
+
+	if config.ClientCAFile != "" {
+		pemCerts, err := os.ReadFile(config.ClientCAFile)
+		if err != nil {
+			return nil, errors.New("http: failed to read client_ca_file: " + err.Error())
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemCerts) {
+			return nil, errors.New("http: no certificates found in client_ca_file " + config.ClientCAFile)
+		}
+		conf.ClientCAs = pool
+		conf.ClientAuth = tls.VerifyClientCertIfGiven
+	}
+
+	if config.RequireClientCert {
+		if conf.ClientCAs == nil {
+			// Without a CA list the certificate cannot be verified against anything, so
+			// requiring one would only prove the peer owns some key. Fail loudly instead
+			// of starting a listener which looks authenticated but is not.
+			return nil, errors.New("http: require_client_cert is set but client_ca_file is missing")
+		}
+		conf.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	return conf, nil
+}
+
+// Parse the TLS config of the main HTTP listener. Also applies the listener-wide HSTS and
+// HTTP->HTTPS redirect settings, which is why it is separate from parseListenerTLSConfig.
+func parseTLSConfig(tlsEnabled bool, jsconfig json.RawMessage) (*tls.Config, error) {
+	config, err := parseTLSConfigJSON(jsconfig, "tls_config")
+	if err != nil {
+		return nil, err
 	}
 
 	if !tlsEnabled && !config.Enabled {
@@ -776,24 +843,28 @@ func parseTLSConfig(tlsEnabled bool, jsconfig json.RawMessage) (*tls.Config, err
 
 	globals.tlsRedirectHTTP = config.RedirectHTTP
 
-	// If autocert is provided, use it.
-	if config.Autocert != nil {
-		certManager := autocert.Manager{
-			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(config.Autocert.Domains...),
-			Cache:      autocert.DirCache(config.Autocert.CertCache),
-			Email:      config.Autocert.Email,
-		}
-		return certManager.TLSConfig(), nil
+	return makeTLSConfig(config)
+}
+
+// Parse a TLS config section belonging to a listener other than the main HTTP one, e.g.
+// the gRPC listener. Such a listener may need different certificates or a different client
+// authentication policy than the public HTTP endpoint. Returns nil if the section is
+// missing or not enabled; the caller decides what to do in that case.
+func parseListenerTLSConfig(jsconfig json.RawMessage, what string) (*tls.Config, error) {
+	if len(jsconfig) == 0 {
+		return nil, nil
 	}
 
-	// Otherwise try to use static keys.
-	cert, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
+	config, err := parseTLSConfigJSON(jsconfig, what)
 	if err != nil {
 		return nil, err
 	}
 
-	return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
+	if !config.Enabled {
+		return nil, nil
+	}
+
+	return makeTLSConfig(config)
 }
 
 // Merge source interface{} into destination interface.

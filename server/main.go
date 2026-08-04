@@ -273,6 +273,11 @@ type configType struct {
 	// Enable handling of gRPC keepalives https://github.com/grpc/grpc/blob/master/doc/keepalive.md
 	// This sets server's GRPC_ARG_KEEPALIVE_TIME_MS to 60 seconds instead of the default 2 hours.
 	GrpcKeepalive bool `json:"grpc_keepalive_enabled"`
+	// TLS configuration of the gRPC listener. If missing, the gRPC listener shares the TLS
+	// configuration of the HTTP listener (see "tls" below). Define it to give gRPC its own
+	// certificate or its own client authentication policy, e.g. to require client
+	// certificates on the gRPC endpoint without requiring them from web clients.
+	GrpcTLS json.RawMessage `json:"grpc_tls"`
 	// URL path for mounting the directory with static files (usually TinodeWeb).
 	StaticMount string `json:"static_mount"`
 	// Local path to static files. All files in this path are made accessible by HTTP.
@@ -695,7 +700,16 @@ func main() {
 	if *listenGrpc == "" {
 		*listenGrpc = config.GrpcListen
 	}
-	if globals.grpcServer, err = serveGrpc(*listenGrpc, config.GrpcKeepalive, tlsConfig); err != nil {
+	// The gRPC listener uses its own TLS configuration when one is given, otherwise it
+	// shares the HTTP listener's. An explicitly disabled "grpc_tls" means plain gRPC even
+	// when HTTP is served over TLS.
+	grpcTLSConfig := tlsConfig
+	if len(config.GrpcTLS) > 0 {
+		if grpcTLSConfig, err = parseListenerTLSConfig(config.GrpcTLS, "grpc_tls"); err != nil {
+			logs.Err.Fatalln(err)
+		}
+	}
+	if globals.grpcServer, err = serveGrpc(*listenGrpc, config.GrpcKeepalive, grpcTLSConfig); err != nil {
 		logs.Err.Fatal(err)
 	}
 

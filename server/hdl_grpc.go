@@ -160,6 +160,11 @@ func serveGrpc(addr string, kaEnabled bool, tlsConf *tls.Config) (*grpc.Server, 
 	if tlsConf != nil {
 		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConf)))
 		secure = " secure"
+		if tlsConf.ClientAuth == tls.RequireAndVerifyClientCert {
+			// Worth calling out: it is the difference between "anyone may connect over an
+			// encrypted channel" and "only holders of a signed client certificate may".
+			secure = " mutually authenticated"
+		}
 	}
 
 	if kaEnabled {
