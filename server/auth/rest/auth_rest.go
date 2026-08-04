@@ -3,14 +3,24 @@ package rest
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/tinode/chat/server/auth"
 	"github.com/tinode/chat/server/logs"
@@ -32,6 +42,151 @@ type authenticator struct {
 	rTagNS []string
 	// Optional regex pattern for checking tokens.
 	reToken *regexp.Regexp
+	// Optional signer for outgoing requests. Nil when service JWT is not configured.
+	signer *requestSigner
+}
+
+// serviceJWTConfig configures signing of outgoing requests with a short-lived
+// JWT. It is entirely optional: when absent the authenticator posts exactly as
+// before, so existing deployments are unaffected.
+//
+// The token is bound to the request it authorises -- method, path and a hash of
+// the body -- so that a captured token cannot be replayed against a different
+// endpoint or with a modified payload. The receiving service is expected to
+// verify the signature with the public key matching Kid, to check Issuer,
+// Audience and the time window, and to reject a repeated Jti.
+type serviceJWTConfig struct {
+	// PEM-encoded EC P-256 private key, either inline or in a file. Exactly one
+	// of the two must be set. The key never leaves this process.
+	PrivateKeyPEM  string `json:"private_key_pem,omitempty"`
+	PrivateKeyFile string `json:"private_key_file,omitempty"`
+	// Key identifier published in the JWT header so the receiver can select a
+	// public key and support rotation.
+	Kid string `json:"kid"`
+	// Values for the corresponding registered claims.
+	Issuer   string `json:"issuer"`
+	Audience string `json:"audience"`
+	// Token lifetime in seconds. Defaults to 30, capped at 300: these tokens
+	// authorise a single call and are not meant to be reusable.
+	LifetimeSec int `json:"lifetime_sec,omitempty"`
+	// Header to carry the token and the scheme prefix. Default to
+	// "Authorization" and "Bearer".
+	Header string `json:"header,omitempty"`
+	Scheme string `json:"scheme,omitempty"`
+}
+
+type requestSigner struct {
+	key      *ecdsa.PrivateKey
+	kid      string
+	issuer   string
+	audience string
+	lifetime time.Duration
+	header   string
+	scheme   string
+}
+
+// bindingClaims carries the registered claims plus the binding to a specific
+// request.
+type bindingClaims struct {
+	Method     string `json:"method"`
+	Path       string `json:"path"`
+	BodySHA256 string `json:"body_sha256"`
+	jwt.RegisteredClaims
+}
+
+const (
+	defaultJWTLifetime = 30 * time.Second
+	maxJWTLifetime     = 300 * time.Second
+)
+
+func newRequestSigner(config *serviceJWTConfig) (*requestSigner, error) {
+	if config.Kid == "" || config.Issuer == "" || config.Audience == "" {
+		return nil, errors.New("auth_rest: service_jwt requires kid, issuer and audience")
+	}
+	if (config.PrivateKeyPEM == "") == (config.PrivateKeyFile == "") {
+		return nil, errors.New("auth_rest: service_jwt requires exactly one of private_key_pem, private_key_file")
+	}
+
+	raw := []byte(config.PrivateKeyPEM)
+	if config.PrivateKeyFile != "" {
+		var err error
+		if raw, err = os.ReadFile(config.PrivateKeyFile); err != nil {
+			return nil, errors.New("auth_rest: failed to read service_jwt private key: " + err.Error())
+		}
+	}
+
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, errors.New("auth_rest: service_jwt private key is not valid PEM")
+	}
+	var key *ecdsa.PrivateKey
+	if parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		var ok bool
+		if key, ok = parsed.(*ecdsa.PrivateKey); !ok {
+			return nil, errors.New("auth_rest: service_jwt private key is not an EC key")
+		}
+	} else if key, err = x509.ParseECPrivateKey(block.Bytes); err != nil {
+		return nil, errors.New("auth_rest: failed to parse service_jwt private key: " + err.Error())
+	}
+	// The algorithm is fixed to ES256, so the curve is not negotiable either.
+	if key.Curve != elliptic.P256() {
+		return nil, errors.New("auth_rest: service_jwt private key must be on the P-256 curve")
+	}
+
+	lifetime := defaultJWTLifetime
+	if config.LifetimeSec > 0 {
+		lifetime = time.Duration(config.LifetimeSec) * time.Second
+	}
+	if lifetime > maxJWTLifetime {
+		return nil, errors.New("auth_rest: service_jwt lifetime_sec is too large")
+	}
+
+	signer := &requestSigner{
+		key: key, kid: config.Kid, issuer: config.Issuer, audience: config.Audience,
+		lifetime: lifetime, header: config.Header, scheme: config.Scheme,
+	}
+	if signer.header == "" {
+		signer.header = "Authorization"
+	}
+	if signer.scheme == "" {
+		signer.scheme = "Bearer"
+	}
+	return signer, nil
+}
+
+// sign issues a token authorising exactly one request.
+func (s *requestSigner) sign(method, path string, body []byte) (string, error) {
+	jti, err := newJTI()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(body)
+	now := time.Now()
+	claims := &bindingClaims{
+		Method:     method,
+		Path:       path,
+		BodySHA256: hex.EncodeToString(sum[:]),
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    s.issuer,
+			Audience:  jwt.ClaimStrings{s.audience},
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(s.lifetime)),
+			ID:        jti,
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
+	token.Header["kid"] = s.kid
+	return token.SignedString(s.key)
+}
+
+func newJTI() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		// A guessable jti would let a captured token be replayed once the receiver
+		// has forgotten it, so fail the call rather than issue a weak token.
+		return "", errors.New("auth_rest: failed to generate jti: " + err.Error())
+	}
+	return hex.EncodeToString(raw), nil
 }
 
 // Request to the server.
@@ -91,6 +246,8 @@ func (a *authenticator) Init(jsonconf json.RawMessage, name string) error {
 		AllowNewAccounts bool `json:"allow_new_accounts"`
 		// Use separate endpoints, i.e. add request name to serverUrl path when making requests.
 		UseSeparateEndpoints bool `json:"use_separate_endpoints"`
+		// Optional signing of outgoing requests; see serviceJWTConfig.
+		ServiceJWT *serviceJWTConfig `json:"service_jwt,omitempty"`
 	}
 
 	var config configType
@@ -113,6 +270,14 @@ func (a *authenticator) Init(jsonconf json.RawMessage, name string) error {
 	a.allowNewAccounts = config.AllowNewAccounts
 	a.useSeparateEndpoints = config.UseSeparateEndpoints
 
+	if config.ServiceJWT != nil {
+		signer, err := newRequestSigner(config.ServiceJWT)
+		if err != nil {
+			return err
+		}
+		a.signer = signer
+	}
+
 	return nil
 }
 
@@ -124,8 +289,8 @@ func (a *authenticator) IsInitialized() bool {
 // Execute HTTP POST to the server at the specified endpoint and with the provided payload.
 func (a *authenticator) callEndpoint(endpoint string, rec *auth.Rec, secret []byte, remoteAddr string) (*response, error) {
 	// Convert payload to json.
-	req := &request{Endpoint: endpoint, Name: a.name, Record: rec, Secret: secret, RemoteAddr: remoteAddr}
-	content, err := json.Marshal(req)
+	payload := &request{Endpoint: endpoint, Name: a.name, Record: rec, Secret: secret, RemoteAddr: remoteAddr}
+	content, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +303,27 @@ func (a *authenticator) callEndpoint(endpoint string, rec *auth.Rec, secret []by
 	}
 
 	// Send payload to server using default HTTP client.
-	post, err := http.Post(urlToCall, "application/json", bytes.NewBuffer(content))
+	req, err := http.NewRequest(http.MethodPost, urlToCall, bytes.NewBuffer(content))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	if a.signer != nil {
+		// The token is bound to this exact request, so it is issued after the
+		// URL and body are final and never reused for another call.
+		parsed, err := url.Parse(urlToCall)
+		if err != nil {
+			return nil, err
+		}
+		token, err := a.signer.sign(req.Method, parsed.EscapedPath(), content)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set(a.signer.header, a.signer.scheme+" "+token)
+	}
+
+	post, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

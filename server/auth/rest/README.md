@@ -15,6 +15,7 @@ may be skipped.
 
 - [REST or JSON-RPC authenticator](#rest-or-json-rpc-authenticator)
 	- [Configuration](#configuration)
+		- [Authenticating the requests to the server](#authenticating-the-requests-to-the-server)
 	- [Request](#request)
 	- [Response](#response)
 	- [Recognized error responses](#recognized-error-responses)
@@ -68,6 +69,72 @@ Add the following section to the `auth_config` in [tinode.conf](../../tinode.con
   ...
 },
 ```
+
+### Authenticating the requests to the server
+
+By default the requests carry no credentials: the authentication server is expected to be
+reachable by Tinode only. If the server needs to verify that a request really came from
+Tinode, add an optional `service_jwt` section. Tinode will then sign every outgoing request
+with a short-lived ES256 JWT:
+
+```js
+"rest": {
+  "server_url": "http://127.0.0.1:5000/",
+  ...
+  "service_jwt": {
+    // PEM-encoded EC P-256 private key, either inline or in a file.
+    // Exactly one of the two must be given.
+    "private_key_pem": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+    // "private_key_file": "/etc/tinode/rest-auth-signing-key.pem",
+
+    // Key ID, published in the JWT header so that the server can select the
+    // matching public key and rotate keys without downtime.
+    "kid": "rest-auth-2024-01",
+    // Values of the "iss" and "aud" claims.
+    "issuer": "tinode",
+    "audience": "auth-service",
+
+    // Token lifetime in seconds. Optional, defaults to 30, maximum 300.
+    "lifetime_sec": 30,
+
+    // Header carrying the token and the scheme prefix.
+    // Optional, default to "Authorization" and "Bearer".
+    "header": "Authorization",
+    "scheme": "Bearer"
+  }
+}
+```
+
+Every request gets its own token, signed after the URL and the body are final:
+
+```js
+// JWT header
+{ "alg": "ES256", "typ": "JWT", "kid": "rest-auth-2024-01" }
+// JWT claims
+{
+  "iss": "tinode",
+  "aud": "auth-service",
+  "iat": 1704067200,
+  "exp": 1704067230,
+  "jti": "0e0a3c1d9f0b4a2c8d5e6f7a8b9c0d1e", // 128 random bits, unique per request
+  "method": "POST",                          // HTTP method of this request
+  "path": "/add",                            // URL path only, no query, no host
+  "body_sha256": "9f86d081..."               // hex SHA-256 of the request body
+}
+```
+
+The `method`, `path` and `body_sha256` claims bind the token to the exact request it
+authorises, so a captured token cannot be replayed against a different endpoint or with a
+modified payload. The authentication server is expected to:
+
+* reject any token whose signature does not verify with the public key for `kid`,
+  and refuse algorithms other than `ES256`;
+* check `iss`, `aud` and the `iat`/`exp` window, allowing only a small clock skew;
+* recompute `method`, `path` and `body_sha256` from the request as received and compare;
+* remember `jti` until `exp` passes and reject a repeat.
+
+The private key never leaves the Tinode process. If the `service_jwt` section is present but
+invalid, the server fails to start rather than falling back to unsigned requests.
 If you want to use your authenticator **instead** of stock `basic` (login-password) authentication,
 add logical renaming and disable `rest` at the original name:
 ```js
