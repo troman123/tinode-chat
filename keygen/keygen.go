@@ -58,6 +58,8 @@ func generate(sequence, isRoot int, hmacSaltB64 string) int {
 	var data [APIKEY_LENGTH]byte
 	var hmacSalt []byte
 
+	suppliedSalt := hmacSaltB64 != ""
+
 	if hmacSaltB64 == "" {
 		hmacSalt = make([]byte, 32)
 		_, err := rand.Read(hmacSalt)
@@ -102,8 +104,18 @@ func generate(sequence, isRoot int, hmacSaltB64 string) int {
 		strIsRoot = "ordinary"
 	}
 
-	fmt.Printf("API key v%d seq%d [%s]: %s\nHMAC salt: %s\n", 1, sequence, strIsRoot,
-		base64.URLEncoding.EncodeToString(data[:]), hmacSaltB64)
+	key := base64.URLEncoding.EncodeToString(data[:])
+
+	// Only report the salt when this run generated it. Echoing back a salt the
+	// caller supplied puts a long-lived secret into terminal history, shell
+	// transcripts and CI logs, in exchange for telling the caller something it
+	// already knew.
+	if suppliedSalt {
+		fmt.Printf("API key v%d seq%d [%s]: %s\n", 1, sequence, strIsRoot, key)
+	} else {
+		fmt.Printf("API key v%d seq%d [%s]: %s\nHMAC salt: %s\n", 1, sequence, strIsRoot,
+			key, hmacSaltB64)
+	}
 
 	return 0
 }
