@@ -58,7 +58,9 @@ func (*grpcNodeServer) MessageLoop(stream pbx.Node_MessageLoopServer) error {
 			logs.Err.Println("grpc: recv", sess.sid, err)
 			return err
 		}
-		logs.Info.Println("grpc in:", truncateStringIfTooLong(in.String()), sess.sid)
+		// Redact before truncating: truncation is a length limit, not a filter,
+		// and the secret sits near the front of a login packet.
+		logs.Info.Println("grpc in:", truncateStringIfTooLong(redactedProtoString(in)), sess.sid)
 		statsInc("IncomingMessagesGrpcTotal", 1)
 		sess.dispatch(pbCliDeserialize(in))
 
