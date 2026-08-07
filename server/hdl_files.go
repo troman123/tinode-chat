@@ -607,7 +607,11 @@ func authFileRequest(authMethod, secret, sid, remoteAddr string) (types.Uid, []b
 		decodedSecret := make([]byte, base64.StdEncoding.DecodedLen(len(secret)))
 		n, err := base64.StdEncoding.Decode(decodedSecret, []byte(secret))
 		if err != nil {
-			logs.Info.Println("media: invalid auth secret", authMethod, "'"+secret+"'")
+			// The secret itself is not logged even though it failed to decode:
+			// "failed to decode" is not "is not a credential" — an expired or
+			// mistyped token is still one. The method and the session are what
+			// make the line actionable.
+			logs.Info.Println("media: auth secret is not base64", authMethod, sid)
 			return uid, nil, types.ErrMalformed
 		}
 

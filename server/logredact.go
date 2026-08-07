@@ -3,13 +3,16 @@
  *  Description :
  *
  *    Redaction of authentication secrets from protobuf messages before they are
- *    written to the log.
+ *    written to the log. The set of field names defined here is shared with the
+ *    JSON redaction in logredact_json.go.
  *
  *****************************************************************************/
 
 package main
 
 import (
+	"strings"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -19,19 +22,70 @@ import (
 // not vary with the value it hides.
 const redactedPlaceholder = "<redacted>"
 
-// sensitiveFieldNames lists protobuf field names whose values must never reach
-// the log. Matching is by name rather than by an explicit list of messages so
-// that a field added upstream later is redacted the day it appears, instead of
+// sensitiveFieldNames lists the field names whose values must never reach the
+// log. Matching is by name rather than by an explicit list of messages so that
+// a field added upstream later is redacted the day it appears, instead of
 // leaking until someone remembers to extend a list here.
 //
-// In the current schema this covers ClientLogin.secret, ClientAcc.secret,
-// ClientAcc.token, ClientAcc.tmp_secret, ClientCred.response and Auth.secret.
-var sensitiveFieldNames = map[protoreflect.Name]struct{}{
-	"secret":     {},
-	"tmp_secret": {},
-	"token":      {},
-	"password":   {},
-	"response":   {},
+// The set is shared by both redaction paths — the protobuf one below and the
+// JSON one in logredact_json.go. The two wire formats carry the same
+// credentials, and a set maintained once per path only ever gets extended on
+// the path someone happened to be looking at.
+//
+// Names are stored canonicalised (see canonicalFieldName), so one entry covers
+// both spellings of a field whose protobuf and JSON names differ only in
+// separators or case.
+//
+// In the protobuf schema this covers ClientLogin.secret, ClientAcc.secret,
+// ClientAcc.token, ClientAcc.tmp_secret, ClientCred.response and Auth.secret;
+// in the JSON schema {login}.secret, {acc}.secret, {acc}.tmpsecret and the
+// credential verification code {cred}.resp.
+var sensitiveFieldNames = map[string]struct{}{
+	"secret":    {},
+	"tmpsecret": {},
+	"token":     {},
+	"password":  {},
+	"response":  {},
+	"resp":      {},
+}
+
+// canonicalFieldName reduces a field name to the form used as a key in
+// sensitiveFieldNames: lower case, separators removed.
+//
+// Two things make the raw name unusable as a key. The wire formats spell the
+// same field differently — protobuf `tmp_secret` is `tmpsecret` in JSON — and
+// encoding/json matches object keys to struct fields case-insensitively, so a
+// client may send `Secret` and still be understood by the parser. Redaction has
+// to cover everything the parser accepts, not just the canonical spelling.
+func canonicalFieldName(name string) string {
+	if !needsCanonicalisation(name) {
+		return name
+	}
+	var out strings.Builder
+	out.Grow(len(name))
+	for i := 0; i < len(name); i++ {
+		switch c := name[i]; {
+		case c == '_' || c == '-':
+		case c >= 'A' && c <= 'Z':
+			out.WriteByte(c + ('a' - 'A'))
+		default:
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
+}
+
+// needsCanonicalisation reports whether canonicalFieldName would change the
+// name. Almost every field is already canonical; checking first keeps the
+// common case free of an allocation, on a path that runs for every field of
+// every logged packet.
+func needsCanonicalisation(name string) bool {
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; c == '_' || c == '-' || (c >= 'A' && c <= 'Z') {
+			return true
+		}
+	}
+	return false
 }
 
 // redactedProtoString renders a protobuf message for logging with every
@@ -71,7 +125,7 @@ func redactMessage(msg protoreflect.Message) {
 	var descend []protoreflect.Message
 
 	msg.Range(func(fd protoreflect.FieldDescriptor, val protoreflect.Value) bool {
-		if _, found := sensitiveFieldNames[fd.Name()]; found {
+		if _, found := sensitiveFieldNames[canonicalFieldName(string(fd.Name()))]; found {
 			sensitive = append(sensitive, fd)
 			return true
 		}

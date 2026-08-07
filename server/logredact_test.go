@@ -92,9 +92,13 @@ func TestRedactedProtoStringHandlesNil(t *testing.T) {
 
 // suspiciousFieldNameParts are substrings that mark a field as likely to carry
 // a credential. Every matching field in the pbx schema has to be either
-// redacted or listed as reviewed-and-harmless below.
+// redacted or listed as reviewed-and-harmless below; TestSensitiveJSONFieldCoverage
+// applies the same list to the json tags of the client messages.
+//
+// The parts are matched against the canonicalised name, so they carry no
+// separators: "apikey" catches "api_key" as well.
 var suspiciousFieldNameParts = []string{
-	"secret", "token", "password", "passwd", "credential", "response", "apikey", "api_key",
+	"secret", "token", "password", "passwd", "credential", "response", "resp", "apikey",
 }
 
 // reviewedHarmlessFields are fields whose names match the patterns above but
@@ -137,8 +141,8 @@ func walkMessageFields(t *testing.T, md protoreflect.MessageDescriptor) int {
 		fd := fields.Get(i)
 		checked++
 
-		name := string(fd.Name())
-		_, redacted := sensitiveFieldNames[fd.Name()]
+		name := canonicalFieldName(string(fd.Name()))
+		_, redacted := sensitiveFieldNames[name]
 		_, reviewed := reviewedHarmlessFields[string(md.FullName())+"."+name]
 
 		for _, part := range suspiciousFieldNameParts {
@@ -167,7 +171,7 @@ func walkMessageFields(t *testing.T, md protoreflect.MessageDescriptor) int {
 // TestRedactedProtoStringCoversKnownSensitiveFields pins the fields that are
 // redacted today, so that removing one from the map is a deliberate act.
 func TestRedactedProtoStringCoversKnownSensitiveFields(t *testing.T) {
-	for _, name := range []protoreflect.Name{"secret", "tmp_secret", "token", "response"} {
+	for _, name := range []string{"secret", "tmpsecret", "token", "response", "resp"} {
 		if _, found := sensitiveFieldNames[name]; !found {
 			t.Errorf("字段 %q 不再脱敏", name)
 		}

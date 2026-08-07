@@ -444,10 +444,15 @@ func (s *Session) dispatchRaw(raw []byte) {
 		return
 	}
 
-	toLog := raw
+	// The packet is logged before it is parsed, and this is the point at which a
+	// client's authentication secret would reach the log: {login} and {acc}
+	// carry it in the clear. Redact first, then truncate the redacted rendering
+	// rather than the raw bytes — truncating first would leave a packet that no
+	// longer parses, and an unparsable packet cannot be shown to be safe to log.
+	toLog := redactedJSONString(raw)
 	truncated := ""
-	if len(raw) > 512 {
-		toLog = raw[:512]
+	if len(toLog) > 512 {
+		toLog = toLog[:512]
 		truncated = "<...>"
 	}
 	logs.Info.Printf("in: '%s%s' sid='%s' uid='%s'", toLog, truncated, s.sid, s.uid)
