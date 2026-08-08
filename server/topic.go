@@ -2030,6 +2030,20 @@ func (t *Topic) anotherUserSub(sess *Session, asUid, target types.Uid, asChan bo
 		} else if modeGiven != userData.modeGiven {
 			// Changing the previously assigned value.
 
+			// In P2P topics 'A' cannot be removed from either member (see the clamp
+			// above and in thisUserSub), which makes every member an approver by
+			// construction. Without a further restriction that lets either member
+			// rewrite the other's granted access at will, so a grant issued by an
+			// administrative path can be undone by an ordinary client.
+			// Restrict changing an existing P2P grant to the trusted management
+			// path: a root session, optionally acting on behalf of a member.
+			// Creating a subscription, re-sending an invite and changing one's own
+			// modeWant are unaffected.
+			if t.cat == types.TopicCatP2P && sess.authLvl != auth.LevelRoot {
+				sess.queueOut(ErrPermissionDeniedReply(pkt, now))
+				return nil, errors.New("changing another member's access in a P2P topic requires root")
+			}
+
 			// Cannot strip owner of ownership or ban the owner.
 			if t.owner == target && (!modeGiven.IsOwner() || !modeGiven.IsJoiner()) {
 				sess.queueOut(ErrPermissionDeniedReply(pkt, now))
