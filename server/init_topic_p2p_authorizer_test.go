@@ -73,3 +73,16 @@ func TestAuthorizeP2PCreation(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeInitialP2PModeGiven(t *testing.T) {
+	previous := globals.typesModeCP2P
+	t.Cleanup(func() { globals.typesModeCP2P = previous })
+	globals.typesModeCP2P = types.ModeCP2P
+
+	if got := normalizeInitialP2PModeGiven(types.ModeCAuth); got != types.ModeCP2P {
+		t.Fatalf("normalized mode = %s, want %s", got.String(), types.ModeCP2P.String())
+	}
+	if got := normalizeInitialP2PModeGiven(types.ModeJoin | types.ModeRead); got != types.ModeJoin|types.ModeRead|types.ModeApprove {
+		t.Fatalf("approve was not restored: %s", got.String())
+	}
+}

@@ -373,7 +373,7 @@ func initTopicP2P(t *Topic, sreg *ClientComMessage) error {
 				sub2.ModeGiven = users[u1].Access.Auth
 			}
 			// Sanity check
-			sub2.ModeGiven = sub2.ModeGiven&globals.typesModeCP2P | types.ModeApprove
+			sub2.ModeGiven = normalizeInitialP2PModeGiven(sub2.ModeGiven)
 
 			// Swap Public+Trusted to match swapped Public+Trusted in subs returned from store.Topics.GetSubs
 			sub2.SetPublic(users[u1].Public)
@@ -392,6 +392,9 @@ func initTopicP2P(t *Topic, sreg *ClientComMessage) error {
 				users[u2].Access.Anon,
 				users[u2].Access.Auth,
 				globals.typesModeCP2P)
+			// User defaults include ModeShare (JRWPAS), which is not part of the
+			// P2P ACL contract. Apply the same P2P mask used for the invited side.
+			userData.modeGiven = normalizeInitialP2PModeGiven(userData.modeGiven)
 
 			// By default assign the same mode that user1 gave to user2 (could be changed below)
 			userData.modeWant = sub2.ModeGiven
@@ -507,6 +510,14 @@ func initTopicP2P(t *Topic, sreg *ClientComMessage) error {
 	t.xoriginal = ""
 
 	return nil
+}
+
+// normalizeInitialP2PModeGiven keeps both subscriptions created for a new P2P
+// topic inside the configured P2P capability set. User-level Auth defaults also
+// contain Share, so using them directly would make only the initiating side
+// JRWPAS while the invited side is correctly JRWPA.
+func normalizeInitialP2PModeGiven(mode types.AccessMode) types.AccessMode {
+	return mode&globals.typesModeCP2P | types.ModeApprove
 }
 
 // authorizeP2PCreation keeps the security verdict independent from the storage
