@@ -153,6 +153,71 @@ func TestP2PRootTwoSidedReductionKeepsManagementStreams(t *testing.T) {
 	}
 }
 
+// A retry may start after the previous process committed just one side to A.
+// Root must be able to attach on behalf of that existing banned subscription so
+// the retry can finish the peer, without changing ModeWant or ModeGiven.
+func TestP2PRootCanAttachExistingBannedSubscriptionForRecovery(t *testing.T) {
+	h := preparePair(t, types.ModeCP2P)
+	defer h.tearDown()
+	defer h.finish()
+
+	banned := h.uids[0]
+	pud := h.topic.perUser[banned]
+	pud.modeGiven = types.ModeApprove
+	h.topic.perUser[banned] = pud
+
+	root, _ := h.newSession("sid-root-recovery", banned)
+	root.authLvl = auth.LevelRoot
+	defer close(root.send)
+	pkt := &ClientComMessage{
+		Sub:      &MsgClientSub{Id: "sub-recovery", Topic: h.topic.name},
+		AsUser:   banned.UserId(),
+		AuthLvl:  int(auth.LevelAuth),
+		Original: h.topic.name,
+		RcptTo:   h.topic.name,
+		sess:     root,
+	}
+	if err := h.topic.subscriptionReply(false, pkt); err != nil {
+		t.Fatalf("root recovery attachment failed: %v", err)
+	}
+	if _, ok := h.topic.sessions[root]; !ok {
+		t.Fatal("root recovery stream was not attached")
+	}
+	got := h.topic.perUser[banned]
+	if got.modeWant != types.ModeCP2P || got.modeGiven != types.ModeApprove {
+		t.Fatalf("recovery attach changed user ACL: want=%s given=%s", got.modeWant, got.modeGiven)
+	}
+}
+
+func TestP2POrdinaryClientCannotAttachExistingBannedSubscription(t *testing.T) {
+	h := preparePair(t, types.ModeCP2P)
+	defer h.tearDown()
+	defer h.finish()
+
+	banned := h.uids[0]
+	pud := h.topic.perUser[banned]
+	pud.modeGiven = types.ModeApprove
+	h.topic.perUser[banned] = pud
+
+	ordinary, _ := h.newSession("sid-ordinary-recovery", banned)
+	ordinary.authLvl = auth.LevelAuth
+	defer close(ordinary.send)
+	pkt := &ClientComMessage{
+		Sub:      &MsgClientSub{Id: "sub-denied", Topic: h.topic.name},
+		AsUser:   banned.UserId(),
+		AuthLvl:  int(auth.LevelAuth),
+		Original: h.topic.name,
+		RcptTo:   h.topic.name,
+		sess:     ordinary,
+	}
+	if err := h.topic.subscriptionReply(false, pkt); err == nil {
+		t.Fatal("ordinary banned client unexpectedly attached")
+	}
+	if _, ok := h.topic.sessions[ordinary]; ok {
+		t.Fatal("ordinary banned client appears in topic sessions")
+	}
+}
+
 // A grant reduced to 'A' on both sides cannot be raised by either member.
 func TestP2PReducedGrantCannotBeUndoneByMembers(t *testing.T) {
 	h := preparePair(t, types.ModeApprove)

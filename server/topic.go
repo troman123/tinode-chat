@@ -1864,6 +1864,13 @@ func (t *Topic) thisUserSub(sess *Session, pkt *ClientComMessage, asUid types.Ui
 	}
 
 	if !userData.modeGiven.IsJoiner() {
+		// A root P2P management stream may attach to an existing banned
+		// subscription without restoring any user permission. This is required for
+		// idempotent recovery after a two-sided ACL update committed its first half
+		// and crashed before the second. Ordinary sessions remain denied below.
+		if t.cat == types.TopicCatP2P && sess.authLvl == auth.LevelRoot && existingSub && want == "" {
+			return modeChanged, nil
+		}
 		// User was banned
 		sess.queueOut(ErrPermissionDeniedReply(pkt, now))
 		return nil, errors.New("topic access denied; user is banned")
