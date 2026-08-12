@@ -2086,7 +2086,16 @@ func (t *Topic) anotherUserSub(sess *Session, asUid, target types.Uid, asChan bo
 
 	if !userData.modeGiven.IsJoiner() {
 		// The user is banned from the topic.
-		t.evictUser(target, false, "")
+		if t.cat == types.TopicCatP2P && sess.authLvl == auth.LevelRoot {
+			// A P2P ACL projector updates both members as one logical operation. It
+			// pre-attaches two root streams, one on behalf of each member. Evicting
+			// the first target must still remove every ordinary client immediately,
+			// but it must not detach the trusted management stream needed to update
+			// the other member. The projector leaves both streams after both writes.
+			t.evictUserPreservingRoot(target, "")
+		} else {
+			t.evictUser(target, false, "")
+		}
 	}
 
 	return modeChanged, nil
@@ -3531,8 +3540,31 @@ func (t *Topic) replyLeaveUnsub(sess *Session, msg *ClientComMessage, asUid type
 
 // evictUser evicts all given user's sessions from the topic and clears user's cached data, if appropriate.
 func (t *Topic) evictUser(uid types.Uid, unsub bool, skip string) {
+	t.evictUserInternal(uid, unsub, skip, false)
+}
+
+// evictUserPreservingRoot evicts ordinary clients while retaining root management
+// streams. It is intentionally private to the P2P administrative ACL path above:
+// normal bans and unsubscriptions must continue to detach every session.
+func (t *Topic) evictUserPreservingRoot(uid types.Uid, skip string) {
+	t.evictUserInternal(uid, false, skip, true)
+}
+
+func (t *Topic) evictUserInternal(uid types.Uid, unsub bool, skip string, preserveRoot bool) {
 	now := types.TimeNow()
 	pud, ok := t.perUser[uid]
+
+	// Retained root streams are short-lived projector attachments. Keep online
+	// accounting consistent so their later {leave} decrements to zero rather than
+	// underflowing after ordinary clients have been evicted.
+	retainedRootOnline := 0
+	if preserveRoot && !unsub {
+		for sess, pssd := range t.sessions {
+			if sess.authLvl == auth.LevelRoot && !sess.background && pssd.uid == uid {
+				retainedRootOnline++
+			}
+		}
+	}
 
 	// Detach user from topic
 	if unsub {
@@ -3556,8 +3588,9 @@ func (t *Topic) evictUser(uid types.Uid, unsub bool, skip string) {
 			// No need to call computePerUserAcsUnion because removal of a channel reader does not change union permissions.
 			// No need to unregister user as we ignore unread channel messages.
 		} else {
-			// Clear online status
-			pud.online = 0
+			// Clear ordinary online status. A trusted management stream retained for
+			// the second half of a P2P ACL update remains counted until it leaves.
+			pud.online = retainedRootOnline
 			t.perUser[uid] = pud
 		}
 	}
@@ -3569,6 +3602,9 @@ func (t *Topic) evictUser(uid types.Uid, unsub bool, skip string) {
 	msg.uid = uid
 	msg.AsUser = uid.UserId()
 	for s := range t.sessions {
+		if preserveRoot && s.authLvl == auth.LevelRoot {
+			continue
+		}
 		if pssd, removed := t.remSession(s, uid); pssd != nil {
 			if removed {
 				s.detachSession(t.name)

@@ -97,6 +97,62 @@ func TestP2PRootCanChangePeerGrant(t *testing.T) {
 	}
 }
 
+// Reducing one member to A evicts that member's ordinary clients, but must retain
+// a pre-attached root management stream long enough to update the other member.
+// Otherwise a two-sided block always stops halfway: the first write evicts the
+// actor required by the second write.
+func TestP2PRootTwoSidedReductionKeepsManagementStreams(t *testing.T) {
+	h := preparePair(t, types.ModeCP2P)
+	defer h.tearDown()
+	defer h.finish()
+
+	rootA, _ := h.newSession("sid-root-a", h.uids[0])
+	rootA.authLvl = auth.LevelRoot
+	defer close(rootA.send)
+	rootB, _ := h.newSession("sid-root-b", h.uids[1])
+	rootB.authLvl = auth.LevelRoot
+	defer close(rootB.send)
+
+	h.topic.sessions[rootA] = perSessionData{uid: h.uids[0]}
+	h.topic.sessions[rootB] = perSessionData{uid: h.uids[1]}
+	for _, uid := range h.uids {
+		pud := h.topic.perUser[uid]
+		pud.online++
+		h.topic.perUser[uid] = pud
+	}
+
+	h.ss.EXPECT().Update(h.topic.name, h.uids[1], gomock.Any()).Return(nil)
+	if err := setP2PGrant(h, rootA, h.uids[0], h.uids[1], "A"); err != nil {
+		t.Fatalf("first root reduction failed: %v", err)
+	}
+	if _, ok := h.topic.sessions[h.sessions[1]]; ok {
+		t.Fatal("ordinary target client must be evicted immediately")
+	}
+	if _, ok := h.topic.sessions[rootB]; !ok {
+		t.Fatal("root stream for the second half must remain attached")
+	}
+
+	h.ss.EXPECT().Update(h.topic.name, h.uids[0], gomock.Any()).Return(nil)
+	if err := setP2PGrant(h, rootB, h.uids[1], h.uids[0], "A"); err != nil {
+		t.Fatalf("second root reduction failed: %v", err)
+	}
+
+	for i, uid := range h.uids {
+		if got := h.topic.perUser[uid].modeGiven; got != types.ModeApprove {
+			t.Fatalf("member %d grant = %s, want A", i, got)
+		}
+		if _, ok := h.topic.sessions[h.sessions[i]]; ok {
+			t.Fatalf("ordinary client %d remained attached", i)
+		}
+	}
+	if _, ok := h.topic.sessions[rootA]; !ok {
+		t.Fatal("first root stream must remain until projector cleanup")
+	}
+	if _, ok := h.topic.sessions[rootB]; !ok {
+		t.Fatal("second root stream must remain until projector cleanup")
+	}
+}
+
 // A grant reduced to 'A' on both sides cannot be raised by either member.
 func TestP2PReducedGrantCannotBeUndoneByMembers(t *testing.T) {
 	h := preparePair(t, types.ModeApprove)
