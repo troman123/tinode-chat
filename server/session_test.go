@@ -549,12 +549,23 @@ func TestDispatchPublishBroadcastChannelFull(t *testing.T) {
 func TestDispatchPublishMissingSubcription(t *testing.T) {
 	uid := types.Uid(1)
 	s := test_makeSession(uid)
+	ctrl := gomock.NewController(t)
+	originalSubs := store.Subs
+	ss := mock_store.NewMockSubsPersistenceInterface(ctrl)
+	store.Subs = ss
+	defer func() { store.Subs = originalSubs }()
 	wg := sync.WaitGroup{}
 	r := responses{}
 	wg.Add(1)
 	go s.testWriteLoop(&r, &wg)
 
 	destUid := types.Uid(2)
+	ss.EXPECT().Get(uid.P2PName(destUid), uid, false).Return(&types.Subscription{
+		Topic:     uid.P2PName(destUid),
+		User:      uid.String(),
+		ModeWant:  types.ModeCP2P,
+		ModeGiven: types.ModeCP2P,
+	}, nil)
 
 	// Subscription to topic missing.
 	s.subs = make(map[string]*Subscription)

@@ -734,6 +734,20 @@ func (s *Session) publish(msg *ClientComMessage) {
 			logs.Err.Println("s.publish: hub.route channel full", s.sid)
 		}
 	} else {
+		// A projector ACL reduction detaches a P2P member before its next publish.
+		// Returning the generic 409 here hides the security decision as a client
+		// sequencing error. Re-read the persisted subscription only on this
+		// already-exceptional unattached P2P path and return an explicit 403 when
+		// write access has been revoked. Other unattached publishes keep the
+		// upstream attach-first behavior.
+		if types.GetTopicCat(msg.RcptTo) == types.TopicCatP2P {
+			if persisted, err := store.Subs.Get(msg.RcptTo, types.ParseUserId(msg.AsUser), false); err == nil &&
+				persisted != nil && !(persisted.ModeWant & persisted.ModeGiven).IsWriter() {
+				s.queueOut(ErrPermissionDeniedReply(msg, msg.Timestamp))
+				return
+			}
+		}
+
 		// Publish request received without attaching to topic first.
 		s.queueOut(ErrAttachFirst(msg, msg.Timestamp))
 		logs.Warn.Printf("s.publish[%s]: must attach first %s", msg.RcptTo, s.sid)

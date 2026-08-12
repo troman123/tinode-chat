@@ -3614,6 +3614,12 @@ func (t *Topic) evictUserInternal(uid types.Uid, unsub bool, skip string, preser
 		}
 		if pssd, removed := t.remSession(s, uid); pssd != nil {
 			if removed {
+				// Remove the session-side route before notifying the network loop.
+				// Leaving deletion solely to the asynchronous detach channel creates
+				// a window where a post-revoke publish is sent into an orphaned topic
+				// channel and its client promise waits for timeout instead of receiving
+				// the persisted-ACL 403 from Session.publish.
+				s.delSub(t.name)
 				s.detachSession(t.name)
 			}
 			if s.sid != skip {

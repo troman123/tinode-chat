@@ -115,6 +115,10 @@ func TestP2PRootTwoSidedReductionKeepsManagementStreams(t *testing.T) {
 
 	h.topic.sessions[rootA] = perSessionData{uid: h.uids[0]}
 	h.topic.sessions[rootB] = perSessionData{uid: h.uids[1]}
+	// The real network session owns a route to the topic in addition to the
+	// topic-side sessions map. ACL eviction must clear both synchronously.
+	h.sessions[0].addSub(h.topic.name, &Subscription{})
+	h.sessions[1].addSub(h.topic.name, &Subscription{})
 	for _, uid := range h.uids {
 		pud := h.topic.perUser[uid]
 		pud.online++
@@ -127,6 +131,9 @@ func TestP2PRootTwoSidedReductionKeepsManagementStreams(t *testing.T) {
 	}
 	if _, ok := h.topic.sessions[h.sessions[1]]; ok {
 		t.Fatal("ordinary target client must be evicted immediately")
+	}
+	if h.sessions[1].getSub(h.topic.name) != nil {
+		t.Fatal("ordinary target route must be removed before ACL update returns")
 	}
 	if _, ok := h.topic.sessions[rootB]; !ok {
 		t.Fatal("root stream for the second half must remain attached")
@@ -144,12 +151,46 @@ func TestP2PRootTwoSidedReductionKeepsManagementStreams(t *testing.T) {
 		if _, ok := h.topic.sessions[h.sessions[i]]; ok {
 			t.Fatalf("ordinary client %d remained attached", i)
 		}
+		if h.sessions[i].getSub(h.topic.name) != nil {
+			t.Fatalf("ordinary client %d retained a stale publish route", i)
+		}
 	}
 	if _, ok := h.topic.sessions[rootA]; !ok {
 		t.Fatal("first root stream must remain until projector cleanup")
 	}
 	if _, ok := h.topic.sessions[rootB]; !ok {
 		t.Fatal("second root stream must remain until projector cleanup")
+	}
+}
+
+// Once a revoked P2P member has been detached, the next publish must expose the
+// persisted ACL decision as 403 rather than a generic 409 attach-order error.
+func TestP2PRevokedDetachedPublishGetsPermissionDenied(t *testing.T) {
+	h := preparePair(t, types.ModeCP2P)
+	defer h.tearDown()
+
+	uid := h.uids[0]
+	h.ss.EXPECT().Get(h.topic.name, uid, false).Return(&types.Subscription{
+		Topic:     h.topic.name,
+		User:      uid.String(),
+		ModeWant:  types.ModeCP2P,
+		ModeGiven: types.ModeApprove,
+	}, nil)
+
+	h.sessions[0].publish(&ClientComMessage{
+		Pub:      &MsgClientPub{Id: "pub-denied", Topic: h.topic.name, Content: "probe"},
+		AsUser:   uid.UserId(),
+		Original: h.topic.name,
+		RcptTo:   h.topic.name,
+	})
+	h.finish()
+
+	if len(h.results[0].messages) != 1 {
+		t.Fatalf("expected one denial response, got %d", len(h.results[0].messages))
+	}
+	reply, ok := h.results[0].messages[0].(*ServerComMessage)
+	if !ok || reply.Ctrl == nil || reply.Ctrl.Code != 403 {
+		t.Fatalf("expected explicit 403 denial, got %#v", h.results[0].messages[0])
 	}
 }
 
