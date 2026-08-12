@@ -307,6 +307,17 @@ func initTopicP2P(t *Topic, sreg *ClientComMessage) error {
 		// The other user.
 		userID2 := types.ParseUserId(t.xoriginal)
 
+		// A configured external policy is consulted only for a genuinely new P2P
+		// topic. Existing topics continue to use their persisted subscriptions and
+		// ModeGiven values, so history/read-only and blocked states are not replaced
+		// by a second policy model here. Root sessions are the trusted administrative
+		// path and bypass this client-creation gate.
+		if stopic == nil {
+			if err := authorizeP2PCreation(userID1, userID2, sreg.sess); err != nil {
+				return err
+			}
+		}
+
 		// User index: u1 - requester, u2 - responder, the other user
 		var u1, u2 int
 		users, err := store.Users.GetAll(userID1, userID2)
@@ -495,6 +506,24 @@ func initTopicP2P(t *Topic, sreg *ClientComMessage) error {
 	// Clear original topic name.
 	t.xoriginal = ""
 
+	return nil
+}
+
+// authorizeP2PCreation keeps the security verdict independent from the storage
+// work in initTopicP2P, so fail-closed and root-bypass semantics can be tested
+// without constructing a database-backed topic.
+func authorizeP2PCreation(requester, target types.Uid, sess *Session) error {
+	if globals.p2pAuthorizer == nil || sess.authLvl == auth.LevelRoot {
+		return nil
+	}
+	allowed, err := globals.p2pAuthorizer.AuthorizeP2P(requester, target, sess.remoteAddr)
+	if err != nil {
+		logs.Err.Println("hub: P2P creation authorization failed", err)
+		return types.ErrPermissionDenied
+	}
+	if !allowed {
+		return types.ErrPermissionDenied
+	}
 	return nil
 }
 

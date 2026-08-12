@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/tinode/chat/server/store/types"
 )
 
 func ecKeyPEM(t *testing.T, curve elliptic.Curve) (*ecdsa.PrivateKey, string) {
@@ -276,5 +277,73 @@ func TestInitAcceptsServiceJWTConfig(t *testing.T) {
 	}
 	if err := (&authenticator{}).Init(jsconf, "rest"); err == nil {
 		t.Fatal("expected Init to fail on an invalid service_jwt block")
+	}
+}
+
+func TestAuthorizeP2PUsesSignedPolicyRequest(t *testing.T) {
+	key, keyPEM := ecKeyPEM(t, elliptic.P256())
+	var got http.Request
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = *r.Clone(r.Context())
+		var err error
+		body, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"boolval":true}`))
+	}))
+	defer srv.Close()
+
+	a := &authenticator{name: "basic", serverUrl: srv.URL + "/", useSeparateEndpoints: true}
+	var err error
+	a.signer, err = newRequestSigner(&serviceJWTConfig{
+		PrivateKeyPEM: keyPEM, Kid: "k1", Issuer: "iss", Audience: "aud",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requester := types.ParseUserId("usrAAAAAAAAAAA")
+	target := types.ParseUserId("usrAQAAAAAAAAA")
+	allowed, err := a.AuthorizeP2P(requester, target, "192.0.2.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allowed {
+		t.Fatal("policy response was not returned")
+	}
+	if got.URL.Path != "/p2p" {
+		t.Fatalf("path = %q, want /p2p", got.URL.Path)
+	}
+
+	var payload request
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Endpoint != "p2p" || payload.Name != "basic" || payload.P2P == nil {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+	if payload.P2P.Requester != requester.UserId() || payload.P2P.Target != target.UserId() {
+		t.Fatalf("unexpected P2P IDs: %+v", payload.P2P)
+	}
+	if payload.Secret != nil || payload.Record != nil {
+		t.Fatal("P2P policy request must not reuse authentication credential fields")
+	}
+
+	header := strings.TrimPrefix(got.Header.Get("Authorization"), "Bearer ")
+	claims := &bindingClaims{}
+	if _, err := jwt.ParseWithClaims(header, claims,
+		func(*jwt.Token) (any, error) { return &key.PublicKey, nil },
+		jwt.WithValidMethods([]string{"ES256"})); err != nil {
+		t.Fatal(err)
+	}
+	if claims.Path != got.URL.EscapedPath() || claims.Method != got.Method {
+		t.Fatalf("request binding = %s %s", claims.Method, claims.Path)
+	}
+	sum := sha256.Sum256(body)
+	if claims.BodySHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatal("body_sha256 does not cover the delivered policy request")
 	}
 }

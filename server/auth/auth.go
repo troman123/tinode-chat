@@ -278,3 +278,17 @@ type AuthHandler interface {
 	// GetRealName returns the hardcoded name of the authenticator.
 	GetRealName() string
 }
+
+// P2PAuthorizer is an optional capability implemented by an authentication
+// handler which can make an external policy decision before a new P2P topic is
+// created. It is deliberately separate from AuthHandler: existing authenticators
+// remain source-compatible, while deployments which need relationship-aware P2P
+// creation can opt in through server configuration.
+//
+// The user IDs are provider-local opaque identifiers. The policy service owns
+// any mapping to its business identities. A false result and every error are
+// both denials at the server call site; an unavailable policy service must never
+// silently reopen topic creation.
+type P2PAuthorizer interface {
+	AuthorizeP2P(requester, target types.Uid, remoteAddr string) (bool, error)
+}

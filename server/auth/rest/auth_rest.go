@@ -191,11 +191,20 @@ func newJTI() (string, error) {
 
 // Request to the server.
 type request struct {
-	Endpoint   string    `json:"endpoint"`
-	Name       string    `json:"name"`
-	Record     *auth.Rec `json:"rec,omitempty"`
-	Secret     []byte    `json:"secret,omitempty"`
-	RemoteAddr string    `json:"addr,omitempty"`
+	Endpoint   string      `json:"endpoint"`
+	Name       string      `json:"name"`
+	Record     *auth.Rec   `json:"rec,omitempty"`
+	Secret     []byte      `json:"secret,omitempty"`
+	RemoteAddr string      `json:"addr,omitempty"`
+	P2P        *p2pRequest `json:"p2p,omitempty"`
+}
+
+// p2pRequest is intentionally provider-neutral. The REST peer receives only
+// the two opaque IDs involved in a requested topic creation; it is responsible
+// for mapping them to its own authority model.
+type p2pRequest struct {
+	Requester string `json:"requester"`
+	Target    string `json:"target"`
 }
 
 // User initialization data when creating a new user.
@@ -288,8 +297,14 @@ func (a *authenticator) IsInitialized() bool {
 
 // Execute HTTP POST to the server at the specified endpoint and with the provided payload.
 func (a *authenticator) callEndpoint(endpoint string, rec *auth.Rec, secret []byte, remoteAddr string) (*response, error) {
+	return a.call(&request{Endpoint: endpoint, Name: a.name, Record: rec, Secret: secret, RemoteAddr: remoteAddr})
+}
+
+// call sends one fully formed request. Keeping serialization, signing and
+// transmission in one function guarantees body_sha256 covers the exact bytes
+// delivered to the policy/authentication service.
+func (a *authenticator) call(payload *request) (*response, error) {
 	// Convert payload to json.
-	payload := &request{Endpoint: endpoint, Name: a.name, Record: rec, Secret: secret, RemoteAddr: remoteAddr}
 	content, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -298,7 +313,7 @@ func (a *authenticator) callEndpoint(endpoint string, rec *auth.Rec, secret []by
 	urlToCall := a.serverUrl
 	if a.useSeparateEndpoints {
 		epUrl, _ := url.Parse(a.serverUrl)
-		epUrl.Path += endpoint
+		epUrl.Path += payload.Endpoint
 		urlToCall = epUrl.String()
 	}
 
@@ -352,6 +367,20 @@ func (a *authenticator) callEndpoint(endpoint string, rec *auth.Rec, secret []by
 	}
 
 	return &resp, nil
+}
+
+// AuthorizeP2P implements auth.P2PAuthorizer. It reuses the REST handler's
+// existing endpoint and service-JWT transport instead of introducing a second
+// unauthenticated policy channel.
+func (a *authenticator) AuthorizeP2P(requester, target types.Uid, remoteAddr string) (bool, error) {
+	resp, err := a.call(&request{
+		Endpoint: "p2p", Name: a.name, RemoteAddr: remoteAddr,
+		P2P: &p2pRequest{Requester: requester.UserId(), Target: target.UserId()},
+	})
+	if err != nil {
+		return false, err
+	}
+	return resp.BoolVal, nil
 }
 
 // AddRecord adds persistent authentication record to the database.

@@ -214,6 +214,10 @@ var globals struct {
 
 	// Maximum age of messages which can be deleted with 'D' permission.
 	msgDeleteAge time.Duration
+
+	// Optional external policy hook for authorizing creation of new P2P topics.
+	// Existing topics never call it: their access is governed by subscriptions.
+	p2pAuthorizer auth.P2PAuthorizer
 }
 
 // Credential validator config.
@@ -322,6 +326,9 @@ type configType struct {
 	// Missing or 0 means no age limit.
 	// Does not affect topic owners: owners can delete any message.
 	MsgDeleteAge int `json:"msg_delete_age"`
+	// Logical authentication handler which also implements auth.P2PAuthorizer.
+	// Empty preserves the upstream behaviour (new P2P topics are not externally checked).
+	P2PAuthorizer string `json:"p2p_authorizer"`
 
 	// Configs for subsystems
 	Cluster   json.RawMessage             `json:"cluster_config"`
@@ -484,6 +491,23 @@ func main() {
 				globals.immutableTagNS[tag] = true
 			}
 		}
+	}
+
+	// Resolve the optional P2P authorizer only after all handlers are initialized:
+	// the REST implementation needs its URL and service-JWT signer ready before
+	// it can be used. Misconfiguration is fatal rather than silently disabling a
+	// security boundary.
+	if config.P2PAuthorizer != "" {
+		handler := store.Store.GetLogicalAuthHandler(config.P2PAuthorizer)
+		if handler == nil {
+			logs.Err.Fatalln("Unknown p2p_authorizer", config.P2PAuthorizer)
+		}
+		authorizer, ok := handler.(auth.P2PAuthorizer)
+		if !ok {
+			logs.Err.Fatalln("Configured p2p_authorizer does not support P2P authorization", config.P2PAuthorizer)
+		}
+		globals.p2pAuthorizer = authorizer
+		logs.Info.Println("P2P creation authorizer:", config.P2PAuthorizer)
 	}
 
 	// Process validators.
