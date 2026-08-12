@@ -375,7 +375,9 @@ func (a *authenticator) call(payload *request) (*response, error) {
 func (a *authenticator) AuthorizeP2P(requester, target types.Uid, remoteAddr string) (bool, error) {
 	resp, err := a.call(&request{
 		Endpoint: "p2p", Name: a.name, RemoteAddr: remoteAddr,
-		P2P: &p2pRequest{Requester: requester.UserId(), Target: target.UserId()},
+		// Platform mappings store the provider UID itself. The "usr" prefix is
+		// Tinode's topic namespace and is not part of that provider identity.
+		P2P: &p2pRequest{Requester: requester.String(), Target: target.String()},
 	})
 	if err != nil {
 		return false, err

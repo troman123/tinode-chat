@@ -325,8 +325,11 @@ func TestAuthorizeP2PUsesSignedPolicyRequest(t *testing.T) {
 	if payload.Endpoint != "p2p" || payload.Name != "basic" || payload.P2P == nil {
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
-	if payload.P2P.Requester != requester.UserId() || payload.P2P.Target != target.UserId() {
+	if payload.P2P.Requester != requester.String() || payload.P2P.Target != target.String() {
 		t.Fatalf("unexpected P2P IDs: %+v", payload.P2P)
+	}
+	if strings.HasPrefix(payload.P2P.Requester, "usr") || strings.HasPrefix(payload.P2P.Target, "usr") {
+		t.Fatal("P2P policy request must contain provider UIDs, not Tinode topic names")
 	}
 	if payload.Secret != nil || payload.Record != nil {
 		t.Fatal("P2P policy request must not reuse authentication credential fields")
