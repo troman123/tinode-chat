@@ -711,7 +711,11 @@ func (messagesMapper) Save(msg *types.Message, attachmentURLs []string, readBySe
 		}
 	}
 
-	if len(attachmentURLs) > 0 {
+	// A nil mediaHandler means this deployment has no 'media' section configured and
+	// therefore serves no out-of-band attachments: there is no file registry in which
+	// anything could be exempted from garbage collection. Skipping is the same outcome
+	// the loop below already produces for a URL that resolves to no file ID.
+	if len(attachmentURLs) > 0 && mediaHandler != nil {
 		var attachments []string
 		for _, url := range attachmentURLs {
 			// Convert attachment URLs to file IDs.
@@ -1044,6 +1048,13 @@ func (fileMapper) Get(fid string) (*types.FileDef, error) {
 
 // DeleteUnused removes unused attachments and avatars.
 func (fileMapper) DeleteUnused(olderThan time.Time, limit int) error {
+	// Without a media handler there is no storage to delete from. The file GC loop is
+	// only started when media is configured, so this is currently unreachable; the guard
+	// keeps the invariant local to the function rather than depending on its callers.
+	if mediaHandler == nil {
+		return nil
+	}
+
 	toDel, err := adp.FileDeleteUnused(olderThan, limit)
 	if err != nil {
 		return err
@@ -1058,6 +1069,12 @@ func (fileMapper) DeleteUnused(olderThan time.Time, limit int) error {
 // LinkAttachments connects earlier uploaded attachments to a message or topic to prevent it
 // from being garbage collected.
 func (fileMapper) LinkAttachments(topic string, msgId types.Uid, attachments []string) error {
+	// No media handler configured: nothing was ever uploaded through this server, so
+	// there is nothing to exempt from garbage collection. See Messages.Save.
+	if mediaHandler == nil {
+		return nil
+	}
+
 	// Convert attachment URLs to file IDs.
 	var fids []string
 	for _, url := range attachments {

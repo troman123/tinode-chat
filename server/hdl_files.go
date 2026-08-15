@@ -387,6 +387,15 @@ func (*grpcNodeServer) LargeFileServe(req *pbx.FileDownReq, stream pbx.Node_Larg
 
 	// Check if media handler redirects or adds headers.
 	mh := store.Store.GetMediaHandler()
+	if mh == nil {
+		// Media handling is not configured. The HTTP surface expresses this by not
+		// registering the /v0/file/ routes at all, but RegisterNodeServer exposes every
+		// service method unconditionally, so the same condition has to be reported here.
+		// 404 matches what an unregistered HTTP route would return.
+		writeResponse(ErrNotFound(msgID, "", now), errors.New("media handler is not configured"))
+		return nil
+	}
+
 	url, _ := url.Parse(req.Uri)
 	headers, statusCode, err := mh.Headers(http.MethodGet, url, http.Header{}, true)
 	if err != nil {
@@ -486,6 +495,13 @@ func (*grpcNodeServer) LargeFileReceive(stream pbx.Node_LargeFileReceiveServer) 
 	if uid.IsZero() {
 		// Not authenticated
 		writeResponse(ErrAuthRequired(msgID, "", now, now), errors.New("user not authenticated"))
+		return nil
+	}
+
+	if mh == nil {
+		// Media handling is not configured; see LargeFileServe for why gRPC has to check
+		// this explicitly while the HTTP surface does not.
+		writeResponse(ErrNotFound(msgID, "", now), errors.New("media handler is not configured"))
 		return nil
 	}
 
