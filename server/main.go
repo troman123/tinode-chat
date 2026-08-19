@@ -645,6 +645,11 @@ func main() {
 	}
 
 	globals.hardDeleteOwnOnly = config.HardDeleteOwnOnly
+	if globals.hardDeleteOwnOnly {
+		// Say it out loud at startup. A misplaced config file leaves this feature silently
+		// off, and "nobody complained" is indistinguishable from "it is working".
+		logs.Info.Println("Hard delete restricted to messages sent by the deleting user")
+	}
 
 	// Configuration of X-Frame-Options header.
 	globals.xFrameOptions = config.XFrameOptions
