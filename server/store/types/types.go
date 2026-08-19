@@ -1325,6 +1325,14 @@ type DelMessage struct {
 
 	// Delete messages newer than this value. Not serialized.
 	newerThan *time.Time
+
+	// Hard-delete only the messages sent by this user. Nil means no restriction.
+	// Not serialized.
+	//
+	// This is an ownership constraint, not a time window: the 'D' permission is
+	// granted per topic and says nothing about who sent a given message, so
+	// without this a user holding 'D' can hard-delete anybody's messages.
+	deleteForSender *Uid
 }
 
 // GetNewerThan returns a newerThan delete query parameter.
@@ -1335,6 +1343,16 @@ func (dm *DelMessage) GetNewerThan() *time.Time {
 // SetNewerThan sets a newerThan delete query parameter.
 func (dm *DelMessage) SetNewerThan(t time.Time) {
 	dm.newerThan = &t
+}
+
+// GetDeleteForSender returns the sender restriction of a hard delete query, nil if unrestricted.
+func (dm *DelMessage) GetDeleteForSender() *Uid {
+	return dm.deleteForSender
+}
+
+// SetDeleteForSender restricts a hard delete to the messages sent by the given user.
+func (dm *DelMessage) SetDeleteForSender(uid Uid) {
+	dm.deleteForSender = &uid
 }
 
 // QueryOpt is options of a query, [since, before] - both ends inclusive (closed)

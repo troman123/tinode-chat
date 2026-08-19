@@ -2809,6 +2809,11 @@ func messageDeleteList(ctx context.Context, tx pgx.Tx, topic string, toDel *t.De
 			args = append(args, newerThan)
 		}
 
+		// We are asked to delete only the messages sent by a particular user.
+		senderSql, senderArgs := common.SenderFilterSql(`m."from"`, toDel.GetDeleteForSender())
+		where += senderSql
+		args = append(args, senderArgs...)
+
 		// Find the actual IDs still present in the database.
 		var seqIDs []int
 		query, newargs := expandQuery("SELECT seqid FROM messages AS m WHERE "+where, args)
@@ -2864,9 +2869,11 @@ func messageDeleteList(ctx context.Context, tx pgx.Tx, topic string, toDel *t.De
 
 	// Now make log entries. Needed for both hard- and soft-deleting.
 
+	logRanges := common.DeleteLogRanges(toDel, delRanges)
+
 	// Prepare statement is not needed because the driver prepares the statement on first use then caches it.
 	forUser := common.DecodeUidString(toDel.DeletedFor)
-	for _, rng := range toDel.SeqIdRanges {
+	for _, rng := range logRanges {
 		if rng.Hi == 0 {
 			// Dellog must contain valid Low and *Hi*.
 			rng.Hi = rng.Low + 1

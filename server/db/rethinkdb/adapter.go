@@ -2410,6 +2410,12 @@ func (a *adapter) MessageDeleteList(topic string, toDel *t.DelMessage) error {
 			query = query.Filter(rdb.Row.Field("CreatedAt").Gt(newerThan))
 		}
 
+		// We are asked to delete only the messages sent by a particular user.
+		// Messages carry the sender as the prefix-less string form, see t.Message.From.
+		if sender := toDel.GetDeleteForSender(); sender != nil {
+			query = query.Filter(rdb.Row.Field("From").Eq(sender.String()))
+		}
+
 		query = query.Field("SeqId")
 
 		// Find the actual IDs still present in the database.
@@ -2471,6 +2477,7 @@ func (a *adapter) MessageDeleteList(topic string, toDel *t.DelMessage) error {
 	}
 
 	// Make log entries. Needed for both hard- and soft-deleting.
+	toDel.SeqIdRanges = common.DeleteLogRanges(toDel, delRanges)
 	_, err = rdb.DB(a.dbName).Table("dellog").Insert(toDel).RunWrite(a.conn)
 	return err
 }

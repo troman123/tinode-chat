@@ -3192,7 +3192,7 @@ func TestReplyDelMsgHardDelete(t *testing.T) {
 
 	pud1 := helper.topic.perUser[user1]
 	pud1.readID = 10
-	pud1.modeGiven = types.ModeCFull  // Full permissions including delete
+	pud1.modeGiven = types.ModeCFull // Full permissions including delete
 	pud1.modeWant = types.ModeCFull
 	helper.topic.perUser[user1] = pud1
 
@@ -3205,7 +3205,7 @@ func TestReplyDelMsgHardDelete(t *testing.T) {
 	// Simulate user1 doing a hard delete of messages 7 and 8
 	msg := &ClientComMessage{
 		Del: &MsgClientDel{
-			Id: "del123",
+			Id:   "del123",
 			What: "msg",
 			DelSeq: []MsgRange{
 				{LowId: 7, HiId: 9}, // Deletes messages 7 and 8 [7, 9)
@@ -3218,7 +3218,8 @@ func TestReplyDelMsgHardDelete(t *testing.T) {
 	}
 
 	// Mock the message deletion for hard delete (forUser = types.ZeroUid)
-	helper.mm.EXPECT().DeleteList(topicName, 1, types.ZeroUid, gomock.Any(), []types.Range{{Low: 7, Hi: 9}}).Return(nil)
+	helper.mm.EXPECT().DeleteList(topicName, 1, types.ZeroUid, gomock.Any(), types.ZeroUid,
+		[]types.Range{{Low: 7, Hi: 9}}).Return(nil)
 
 	// Call the function under test
 	err := helper.topic.replyDelMsg(helper.sessions[0], user1, false, msg)
@@ -3241,6 +3242,127 @@ func TestReplyDelMsgHardDelete(t *testing.T) {
 	}
 }
 
+// hard_delete_own_only: the 'D' permission is per topic and says nothing about who sent a
+// message, so on its own it lets any deleter erase anybody's messages. The four tests below
+// pin who gets restricted and who does not.
+
+// setUpDelTopic prepares a P2P topic where both users hold JRWPAD, the access mode a
+// deployment gets when it turns on p2p_delete_enabled. Neither side is an owner.
+func setUpDelTopic(t *testing.T, helper *TopicTestHelper, topicName string, mode types.AccessMode) {
+	t.Helper()
+	helper.setUp(t, 2, types.TopicCatP2P, topicName, true)
+	helper.topic.lastID = 10
+	for _, uid := range helper.uids {
+		pud := helper.topic.perUser[uid]
+		pud.readID = 10
+		pud.modeGiven = mode
+		pud.modeWant = mode
+		helper.topic.perUser[uid] = pud
+	}
+}
+
+func delMsgRequest(helper *TopicTestHelper, hard bool) *ClientComMessage {
+	return &ClientComMessage{
+		Del: &MsgClientDel{
+			Id:     "del123",
+			What:   "msg",
+			DelSeq: []MsgRange{{LowId: 7, HiId: 9}},
+			Hard:   hard,
+		},
+		AsUser: helper.uids[0].UserId(),
+		sess:   helper.sessions[0],
+		init:   true,
+	}
+}
+
+// With the restriction on, a plain member holding 'D' may only reach their own messages.
+func TestReplyDelMsgOwnOnlyRestrictsANonOwnerToTheirOwnMessages(t *testing.T) {
+	defer func(prev bool) { globals.hardDeleteOwnOnly = prev }(globals.hardDeleteOwnOnly)
+	globals.hardDeleteOwnOnly = true
+
+	topicName := "p2pTest"
+	helper := TopicTestHelper{}
+	setUpDelTopic(t, &helper, topicName, types.ModeCP2PD)
+	defer helper.tearDown()
+	user1 := helper.uids[0]
+
+	helper.mm.EXPECT().DeleteList(topicName, 1, types.ZeroUid, gomock.Any(), user1,
+		[]types.Range{{Low: 7, Hi: 9}}).Return(nil)
+
+	if err := helper.topic.replyDelMsg(helper.sessions[0], user1, false, delMsgRequest(&helper, true)); err != nil {
+		t.Fatalf("replyDelMsg failed: %v", err)
+	}
+	helper.finish()
+	registerSessionVerifyOutputs(t, helper.results[0], []int{http.StatusOK})
+}
+
+// Default off: an unconfigured deployment must behave exactly as upstream.
+func TestReplyDelMsgHardDeleteIsUnrestrictedByDefault(t *testing.T) {
+	if globals.hardDeleteOwnOnly {
+		t.Fatal("hard_delete_own_only must default to off, otherwise upgrading changes behaviour")
+	}
+
+	topicName := "p2pTest"
+	helper := TopicTestHelper{}
+	setUpDelTopic(t, &helper, topicName, types.ModeCP2PD)
+	defer helper.tearDown()
+	user1 := helper.uids[0]
+
+	helper.mm.EXPECT().DeleteList(topicName, 1, types.ZeroUid, gomock.Any(), types.ZeroUid,
+		[]types.Range{{Low: 7, Hi: 9}}).Return(nil)
+
+	if err := helper.topic.replyDelMsg(helper.sessions[0], user1, false, delMsgRequest(&helper, true)); err != nil {
+		t.Fatalf("replyDelMsg failed: %v", err)
+	}
+	helper.finish()
+	registerSessionVerifyOutputs(t, helper.results[0], []int{http.StatusOK})
+}
+
+// Owners keep full reach: moderating a group is the reason to grant 'D' there, and silently
+// disabling it would be a worse surprise than the one this flag prevents.
+func TestReplyDelMsgOwnOnlyExemptsTheOwner(t *testing.T) {
+	defer func(prev bool) { globals.hardDeleteOwnOnly = prev }(globals.hardDeleteOwnOnly)
+	globals.hardDeleteOwnOnly = true
+
+	topicName := "p2pTest"
+	helper := TopicTestHelper{}
+	setUpDelTopic(t, &helper, topicName, types.ModeCFull)
+	defer helper.tearDown()
+	user1 := helper.uids[0]
+
+	helper.mm.EXPECT().DeleteList(topicName, 1, types.ZeroUid, gomock.Any(), types.ZeroUid,
+		[]types.Range{{Low: 7, Hi: 9}}).Return(nil)
+
+	if err := helper.topic.replyDelMsg(helper.sessions[0], user1, false, delMsgRequest(&helper, true)); err != nil {
+		t.Fatalf("replyDelMsg failed: %v", err)
+	}
+	helper.finish()
+	registerSessionVerifyOutputs(t, helper.results[0], []int{http.StatusOK})
+}
+
+// Soft delete only ever touches the caller's own view, so the restriction is meaningless
+// there and must not be passed down: doing so would narrow "delete from my view" to
+// "delete my own messages from my view", which is a different, wrong product behaviour.
+func TestReplyDelMsgOwnOnlyLeavesSoftDeleteAlone(t *testing.T) {
+	defer func(prev bool) { globals.hardDeleteOwnOnly = prev }(globals.hardDeleteOwnOnly)
+	globals.hardDeleteOwnOnly = true
+
+	topicName := "p2pTest"
+	helper := TopicTestHelper{}
+	setUpDelTopic(t, &helper, topicName, types.ModeCP2PD)
+	defer helper.tearDown()
+	user1 := helper.uids[0]
+
+	helper.mm.EXPECT().DeleteList(topicName, 1, user1, time.Duration(0), types.ZeroUid,
+		[]types.Range{{Low: 7, Hi: 9}}).Return(nil)
+
+	if err := helper.topic.replyDelMsg(helper.sessions[0], user1, false, delMsgRequest(&helper, false)); err != nil {
+		t.Fatalf("replyDelMsg failed: %v", err)
+	}
+	helper.finish()
+	registerSessionVerifyOutputs(t, helper.results[0], []int{http.StatusOK})
+}
+
 func TestReplyDelMsgUpdatesUnreadCounters(t *testing.T) {
 	// This test simulates the scenario from issue #898:
 	// 1. User1 sends messages to User2
@@ -3260,17 +3382,17 @@ func TestReplyDelMsgUpdatesUnreadCounters(t *testing.T) {
 	helper.topic.lastID = 10
 
 	pud1 := helper.topic.perUser[user1]
-	pud1.readID = 10  // user1 has read all
+	pud1.readID = 10 // user1 has read all
 	helper.topic.perUser[user1] = pud1
 
 	pud2 := helper.topic.perUser[user2]
-	pud2.readID = 5   // user2 has 5 unread messages
+	pud2.readID = 5 // user2 has 5 unread messages
 	helper.topic.perUser[user2] = pud2
 
 	// Simulate user1 deleting messages 7 and 8 (2 of user2's unread messages)
 	msg := &ClientComMessage{
 		Del: &MsgClientDel{
-			Id: "del123",
+			Id:   "del123",
 			What: "msg",
 			DelSeq: []MsgRange{
 				{LowId: 7, HiId: 9}, // Deletes messages 7 and 8 [7, 9)
@@ -3283,7 +3405,8 @@ func TestReplyDelMsgUpdatesUnreadCounters(t *testing.T) {
 	}
 
 	// Mock the message deletion
-	helper.mm.EXPECT().DeleteList(topicName, 1, user1, time.Duration(0), []types.Range{{Low: 7, Hi: 9}}).Return(nil)
+	helper.mm.EXPECT().DeleteList(topicName, 1, user1, time.Duration(0), types.ZeroUid,
+		[]types.Range{{Low: 7, Hi: 9}}).Return(nil)
 
 	// Call the function under test
 	err := helper.topic.replyDelMsg(helper.sessions[0], user1, false, msg)

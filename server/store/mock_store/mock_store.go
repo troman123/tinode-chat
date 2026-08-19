@@ -1044,17 +1044,17 @@ func (m *MockMessagesPersistenceInterface) EXPECT() *MockMessagesPersistenceInte
 }
 
 // DeleteList mocks base method.
-func (m *MockMessagesPersistenceInterface) DeleteList(topic string, delID int, forUser types.Uid, msgDelAge time.Duration, ranges []types.Range) error {
+func (m *MockMessagesPersistenceInterface) DeleteList(topic string, delID int, forUser types.Uid, msgDelAge time.Duration, senderOnly types.Uid, ranges []types.Range) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteList", topic, delID, forUser, msgDelAge, ranges)
+	ret := m.ctrl.Call(m, "DeleteList", topic, delID, forUser, msgDelAge, senderOnly, ranges)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // DeleteList indicates an expected call of DeleteList.
-func (mr *MockMessagesPersistenceInterfaceMockRecorder) DeleteList(topic, delID, forUser, msgDelAge, ranges interface{}) *gomock.Call {
+func (mr *MockMessagesPersistenceInterfaceMockRecorder) DeleteList(topic, delID, forUser, msgDelAge, senderOnly, ranges interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteList", reflect.TypeOf((*MockMessagesPersistenceInterface)(nil).DeleteList), topic, delID, forUser, msgDelAge, ranges)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteList", reflect.TypeOf((*MockMessagesPersistenceInterface)(nil).DeleteList), topic, delID, forUser, msgDelAge, senderOnly, ranges)
 }
 
 // GetAll mocks base method.

@@ -667,7 +667,8 @@ func (subsMapper) Delete(topic string, user types.Uid) error {
 // MessagesPersistenceInterface is an interface which defines methods for persistent storage of messages.
 type MessagesPersistenceInterface interface {
 	Save(msg *types.Message, attachmentURLs []string, readBySender bool) (error, bool)
-	DeleteList(topic string, delID int, forUser types.Uid, msgDelAge time.Duration, ranges []types.Range) error
+	DeleteList(topic string, delID int, forUser types.Uid, msgDelAge time.Duration, senderOnly types.Uid,
+		ranges []types.Range) error
 	GetAll(topic string, forUser types.Uid, opt *types.QueryOpt) ([]types.Message, error)
 	GetDeleted(topic string, forUser types.Uid, opt *types.QueryOpt) ([]types.Range, int, error)
 }
@@ -732,7 +733,12 @@ func (messagesMapper) Save(msg *types.Message, attachmentURLs []string, readBySe
 }
 
 // DeleteList deletes multiple messages defined by a list of ranges.
-func (messagesMapper) DeleteList(topic string, delID int, forUser types.Uid, msgDelAge time.Duration, ranges []types.Range) error {
+//
+// A non-zero senderOnly restricts a hard delete to the messages sent by that user; it is
+// ignored by soft deletes, which only ever touch the caller's own view. ZeroUid means
+// unrestricted, which is the behaviour when the restriction is not configured.
+func (messagesMapper) DeleteList(topic string, delID int, forUser types.Uid, msgDelAge time.Duration,
+	senderOnly types.Uid, ranges []types.Range) error {
 	var toDel *types.DelMessage
 	if delID > 0 {
 		toDel = &types.DelMessage{
@@ -744,6 +750,9 @@ func (messagesMapper) DeleteList(topic string, delID int, forUser types.Uid, msg
 		toDel.InitTimes()
 		if msgDelAge > 0 {
 			toDel.SetNewerThan(toDel.CreatedAt.Add(-msgDelAge))
+		}
+		if !senderOnly.IsZero() {
+			toDel.SetDeleteForSender(senderOnly)
 		}
 	}
 

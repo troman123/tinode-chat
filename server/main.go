@@ -215,6 +215,9 @@ var globals struct {
 	// Maximum age of messages which can be deleted with 'D' permission.
 	msgDeleteAge time.Duration
 
+	// Restrict hard deletes to the messages sent by the deleting user.
+	hardDeleteOwnOnly bool
+
 	// Optional external policy hook for authorizing creation of new P2P topics.
 	// Existing topics never call it: their access is governed by subscriptions.
 	p2pAuthorizer auth.P2PAuthorizer
@@ -326,6 +329,15 @@ type configType struct {
 	// Missing or 0 means no age limit.
 	// Does not affect topic owners: owners can delete any message.
 	MsgDeleteAge int `json:"msg_delete_age"`
+	// If true, a user with the 'D' permission can hard-delete only the messages they sent
+	// themselves; an attempt to hard-delete somebody else's messages silently deletes
+	// nothing rather than failing, exactly like an out-of-range seqid does.
+	// The 'D' permission is granted per topic and carries no notion of authorship, so
+	// without this granting 'D' to both sides of a conversation also lets each of them
+	// erase the other's messages.
+	// Does not affect topic owners: owners can still moderate any message.
+	// Missing or false preserves the upstream behaviour.
+	HardDeleteOwnOnly bool `json:"hard_delete_own_only"`
 	// Logical authentication handler which also implements auth.P2PAuthorizer.
 	// Empty preserves the upstream behaviour (new P2P topics are not externally checked).
 	P2PAuthorizer string `json:"p2p_authorizer"`
@@ -631,6 +643,8 @@ func main() {
 	if config.MsgDeleteAge > 0 {
 		globals.msgDeleteAge = time.Duration(config.MsgDeleteAge) * time.Second
 	}
+
+	globals.hardDeleteOwnOnly = config.HardDeleteOwnOnly
 
 	// Configuration of X-Frame-Options header.
 	globals.xFrameOptions = config.XFrameOptions

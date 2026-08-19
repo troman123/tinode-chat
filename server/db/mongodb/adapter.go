@@ -2585,6 +2585,12 @@ func (a *adapter) MessageDeleteList(topic string, toDel *t.DelMessage) error {
 			filter["createdat"] = b.M{"$gt": newerThan}
 		}
 
+		// We are asked to delete only the messages sent by a particular user.
+		// Messages carry the sender as the prefix-less string form, see t.Message.From.
+		if sender := toDel.GetDeleteForSender(); sender != nil {
+			filter["from"] = sender.String()
+		}
+
 		pipeline := b.A{
 			b.M{"$match": filter},
 			b.M{"$project": b.M{"seqid": 1}},
@@ -2651,6 +2657,7 @@ func (a *adapter) MessageDeleteList(topic string, toDel *t.DelMessage) error {
 	}
 
 	// Make log entries. Needed for both hard- and soft-deleting.
+	toDel.SeqIdRanges = common.DeleteLogRanges(toDel, delRanges)
 	_, err = a.db.Collection("dellog").InsertOne(a.ctx, toDel)
 	return err
 }

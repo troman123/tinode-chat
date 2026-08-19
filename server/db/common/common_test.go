@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tinode/chat/server/store"
 	"github.com/tinode/chat/server/store/types"
 )
 
@@ -391,5 +392,57 @@ func TestExtractTags(t *testing.T) {
 	expected = nil
 	if !reflect.DeepEqual(tags, expected) {
 		t.Errorf("Expected %+v, got %+v", expected, tags)
+	}
+}
+
+func TestSenderFilterSql(t *testing.T) {
+	// No restriction: the clause must be empty, so an unconfigured deployment keeps
+	// producing byte-identical SQL.
+	sql, args := SenderFilterSql(`m."from"`, nil)
+	if sql != "" || args != nil {
+		t.Errorf("Unrestricted delete must add nothing, got SQL %q args %v", sql, args)
+	}
+
+	// Restricted: the column is taken verbatim because Postgres and MySQL quote it
+	// differently, and the argument is the decoded int64 the messages table actually holds.
+	uid := types.Uid(0xDEADBEEF)
+	sql, args = SenderFilterSql(`m."from"`, &uid)
+	if expected := ` AND m."from"=?`; sql != expected {
+		t.Errorf("Expected SQL %q, got %q", expected, sql)
+	}
+	if !reflect.DeepEqual(args, []any{store.DecodeUid(uid)}) {
+		t.Errorf("Expected the decoded int64 form, got %v (%T)", args[0], args[0])
+	}
+
+	// Comparing against the string form would silently match nothing, which reads exactly
+	// like "the user sent none of these messages".
+	if _, isString := args[0].(string); isString {
+		t.Error("The sender must be compared in its decoded form, not as a string")
+	}
+
+	// MySQL spelling goes through unchanged.
+	sql, _ = SenderFilterSql("m.`from`", &uid)
+	if expected := " AND m.`from`=?"; sql != expected {
+		t.Errorf("Expected SQL %q, got %q", expected, sql)
+	}
+}
+
+func TestDeleteLogRanges(t *testing.T) {
+	requested := []types.Range{{Low: 5, Hi: 12}}
+	// What the restriction actually left behind: only the caller's own messages.
+	actual := []types.Range{{Low: 5, Hi: 7}, {Low: 10, Hi: 12}}
+
+	// Unrestricted: log the request, exactly as before.
+	unrestricted := &types.DelMessage{SeqIdRanges: requested}
+	if got := DeleteLogRanges(unrestricted, actual); !reflect.DeepEqual(got, requested) {
+		t.Errorf("Unrestricted delete must log the requested ranges, got %v", got)
+	}
+
+	// Restricted: log what was deleted. Logging the request would make every client hide
+	// messages 7..10, which are still in the database and belong to somebody else.
+	restricted := &types.DelMessage{SeqIdRanges: requested}
+	restricted.SetDeleteForSender(types.Uid(42))
+	if got := DeleteLogRanges(restricted, actual); !reflect.DeepEqual(got, actual) {
+		t.Errorf("Restricted delete must log what was actually deleted, got %v", got)
 	}
 }

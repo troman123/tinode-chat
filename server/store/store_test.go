@@ -1,9 +1,11 @@
 package store
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,5 +148,75 @@ func TestDeleteUnusedWithoutMediaHandler(t *testing.T) {
 
 	if err := Files.DeleteUnused(time.Now(), 10); err != nil {
 		t.Fatalf("DeleteUnused: unexpected error %v", err)
+	}
+}
+
+// The 'D' permission is granted per topic and carries no notion of authorship, so a
+// deployment which grants it to both sides of a conversation also lets each of them erase
+// the other's messages. `hard_delete_own_only` closes that by restricting a hard delete to
+// the caller's own messages; these tests pin the store half of it.
+
+// deleteCapturingAdapter records the DelMessage handed to the adapter.
+type deleteCapturingAdapter struct {
+	adapter.Adapter
+
+	toDel *types.DelMessage
+}
+
+func (a *deleteCapturingAdapter) MessageDeleteList(topic string, toDel *types.DelMessage) error {
+	a.toDel = toDel
+	return nil
+}
+
+func (a *deleteCapturingAdapter) TopicUpdate(topic string, update map[string]any) error { return nil }
+
+func (a *deleteCapturingAdapter) SubsUpdate(topic string, user types.Uid, update map[string]any) error {
+	return nil
+}
+
+func TestDeleteListCarriesTheSenderRestriction(t *testing.T) {
+	a := &deleteCapturingAdapter{}
+	withStore(t, a, nil)
+
+	sender := types.Uid(42)
+	err := Messages.DeleteList("grpTest", 1, types.ZeroUid, 0, sender, []types.Range{{Low: 7, Hi: 9}})
+	if err != nil {
+		t.Fatalf("DeleteList: unexpected error %v", err)
+	}
+	got := a.toDel.GetDeleteForSender()
+	if got == nil {
+		t.Fatal("DeleteList: the sender restriction was dropped on the way to the adapter")
+	}
+	if *got != sender {
+		t.Fatalf("DeleteList: restricted to %v, want %v", *got, sender)
+	}
+}
+
+// An unconfigured deployment must keep behaving exactly as upstream: no restriction at all.
+func TestDeleteListWithoutRestrictionLeavesItUnset(t *testing.T) {
+	a := &deleteCapturingAdapter{}
+	withStore(t, a, nil)
+
+	err := Messages.DeleteList("grpTest", 1, types.ZeroUid, 0, types.ZeroUid, []types.Range{{Low: 7, Hi: 9}})
+	if err != nil {
+		t.Fatalf("DeleteList: unexpected error %v", err)
+	}
+	if got := a.toDel.GetDeleteForSender(); got != nil {
+		t.Fatalf("DeleteList: unrestricted delete came out restricted to %v", *got)
+	}
+}
+
+// The restriction must not be serialized: it is a query parameter, not a property of the
+// delete log entry. A serialized copy would be written into dellog and read back as data.
+func TestSenderRestrictionIsNotSerialized(t *testing.T) {
+	dm := &types.DelMessage{Topic: "grpTest", DelId: 1}
+	dm.SetDeleteForSender(types.Uid(42))
+
+	encoded, err := json.Marshal(dm)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "eleteForSender") {
+		t.Fatalf("the sender restriction leaked into the serialized form: %s", encoded)
 	}
 }

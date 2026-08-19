@@ -3275,11 +3275,22 @@ func (t *Topic) replyDelMsg(sess *Session, asUid types.Uid, asChan bool, msg *Cl
 
 	forUser := asUid
 	var age time.Duration
+	senderOnly := types.ZeroUid
 	if del.Hard {
 		forUser = types.ZeroUid
 		age = globals.msgDeleteAge
+		// The 'D' permission is granted per topic and says nothing about who sent a
+		// message, so on its own it lets any deleter erase anybody's messages. When the
+		// restriction is enabled, keep hard deletes to the caller's own messages.
+		//
+		// Owners are exempt: moderation is the point of granting 'D' in a group, and
+		// taking it away here would silently disable it. P2P access modes carry no 'O',
+		// so both sides of a conversation remain restricted.
+		if globals.hardDeleteOwnOnly && !(pud.modeGiven & pud.modeWant).IsOwner() {
+			senderOnly = asUid
+		}
 	}
-	if err = store.Messages.DeleteList(t.name, t.delID+1, forUser, age, ranges); err != nil {
+	if err = store.Messages.DeleteList(t.name, t.delID+1, forUser, age, senderOnly, ranges); err != nil {
 		sess.queueOut(ErrUnknownReply(msg, now))
 		return err
 	}

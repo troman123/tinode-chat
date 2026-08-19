@@ -2861,6 +2861,14 @@ func messageDeleteList(tx *sqlx.Tx, topic string, toDel *t.DelMessage) error {
 			args = append(args, newerThan)
 		}
 
+		// We are asked to delete only the messages sent by a particular user.
+		// The log entries below are already written from the recalculated ranges, so a
+		// range which reaches over somebody else's messages is logged as what was really
+		// deleted rather than as what was asked for.
+		senderSql, senderArgs := common.SenderFilterSql("m.`from`", toDel.GetDeleteForSender())
+		where += senderSql
+		args = append(args, senderArgs...)
+
 		// Find the actual IDs still present in the database.
 		var seqIDs []int
 		err = tx.Select(&seqIDs, "SELECT seqid FROM messages AS m WHERE "+where, args...)

@@ -95,6 +95,37 @@ func RangesToSql(in []t.Range) (string, []any) {
 	return "BETWEEN ? AND ?", []any{in[0].Low, in[0].Hi - 1}
 }
 
+// SenderFilterSql converts the sender restriction of a hard delete into an additional SQL
+// condition and its argument. The column must be given already quoted for the dialect
+// (`m."from"` in Postgres, m.`from` in MySQL) because the two spell it differently.
+//
+// A nil sender yields an empty condition, i.e. no restriction, which is what an
+// unconfigured deployment must keep getting.
+//
+// The comparison is against the decoded int64 form because that is how MessageSave stores
+// the sender. Comparing against the string form would match nothing and the caller could
+// not tell that apart from "the user sent none of these messages".
+func SenderFilterSql(column string, sender *t.Uid) (string, []any) {
+	if sender == nil {
+		return "", nil
+	}
+	return " AND " + column + "=?", []any{store.DecodeUid(*sender)}
+}
+
+// DeleteLogRanges returns the ranges a hard delete should record in the delete log.
+//
+// Normally that is what the caller asked for. Under a sender restriction it is what was
+// actually deleted instead: the two differ exactly when the restriction dropped somebody
+// else's messages from the range, and logging the requested range there would tell every
+// client to hide messages which are still in the database -- precisely the deletion the
+// restriction just refused to perform.
+func DeleteLogRanges(toDel *t.DelMessage, deleted []t.Range) []t.Range {
+	if toDel.GetDeleteForSender() == nil {
+		return toDel.SeqIdRanges
+	}
+	return deleted
+}
+
 // DisjunctionSql converts a slice of disjunctions to SQL HAVING clause and arguments.
 func DisjunctionSql(req [][]string, fieldName string) (string, []any) {
 	var args []any
